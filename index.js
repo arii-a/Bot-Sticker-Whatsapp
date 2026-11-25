@@ -6,6 +6,7 @@ import makeWASocket, {
   fetchLatestBaileysVersion,
   Browsers,
 } from '@whiskeysockets/baileys';
+import http from 'node:http';
 import pino from 'pino';
 import qrcode from 'qrcode-terminal';
 import { imageToSticker, videoToSticker, toVoiceNote } from './lib/media.js';
@@ -213,6 +214,11 @@ async function start() {
     if (type !== 'notify') return;
     for (const msg of messages) handleMessage(sock, msg);
   });
+}
+
+// Algunos hostings (p. ej. Render) exigen que el servicio escuche un puerto.
+if (process.env.PORT) {
+  http.createServer((_, res) => res.end('ok')).listen(process.env.PORT);
 }
 
 start();
