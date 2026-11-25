@@ -6,6 +6,7 @@ import makeWASocket, {
   fetchLatestBaileysVersion,
   Browsers,
 } from '@whiskeysockets/baileys';
+import fs from 'node:fs/promises';
 import http from 'node:http';
 import pino from 'pino';
 import qrcode from 'qrcode-terminal';
@@ -13,6 +14,9 @@ import { imageToSticker, videoToSticker, toVoiceNote } from './lib/media.js';
 
 const logger = pino({ level: 'silent' });
 const PHONE = process.env.PHONE?.replace(/\D/g, ''); // opcional: vincular con código en vez de QR
+const AUTH_DIR = process.env.AUTH_DIR || 'auth';
+const MAX_FAILURES = 6; // reintentos seguidos antes de rendirse
+let failures = 0;
 const LAST_STICKER_TTL = 10 * 60 * 1000; // 10 min
 
 // Último sticker creado por chat, para combinarlo luego con /audio
@@ -165,7 +169,7 @@ async function handleMessage(sock, msg) {
 }
 
 async function start() {
-  const { state, saveCreds } = await useMultiFileAuthState(process.env.AUTH_DIR || 'auth');
+  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const { version } = await fetchLatestBaileysVersion();
 
   const sock = makeWASocket({
@@ -192,21 +196,31 @@ async function start() {
     }, 3000);
   }
 
-  sock.ev.on('connection.update', ({ connection, lastDisconnect, qr }) => {
+  sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
     if (qr && !PHONE) {
       console.log('Escanea este QR: WhatsApp > Dispositivos vinculados > Vincular un dispositivo\n');
       qrcode.generate(qr, { small: true });
     }
-    if (connection === 'open') console.log('Bot conectado. Escribe /menu en WhatsApp.');
+    if (connection === 'open') {
+      failures = 0;
+      console.log('Bot conectado. Escribe /menu en WhatsApp.');
+    }
     if (connection === 'close') {
       const code = lastDisconnect?.error?.output?.statusCode;
-      if (code === DisconnectReason.loggedOut) {
-        console.log('Sesión cerrada. Borra la carpeta "auth" y vuelve a vincular.');
-        process.exit(1);
-      }
-      console.log(`Conexión cerrada (código ${code ?? 'desconocido'}), reconectando en 5 s...`);
       sock.ev.removeAllListeners();
-      setTimeout(start, 5000);
+      if (code === DisconnectReason.loggedOut) {
+        // Sesión inválida o cerrada desde el teléfono: se borra y se empieza de cero.
+        console.log('Sesión no válida. Se borra y se vuelve a empezar.');
+        await fs.rm(AUTH_DIR, { recursive: true, force: true });
+      }
+      failures++;
+      if (failures > MAX_FAILURES) {
+        console.log('Demasiados fallos seguidos. No sigo reintentando; reinicia el servicio para probar de nuevo.');
+        return;
+      }
+      const wait = Math.min(5000 * failures, 30000);
+      console.log(`Conexión cerrada (código ${code ?? 'desconocido'}), reintento ${failures}/${MAX_FAILURES} en ${wait / 1000} s...`);
+      setTimeout(start, wait);
     }
   });
 
